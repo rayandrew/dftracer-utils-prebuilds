@@ -1,0 +1,236 @@
+name: Build prebuilts
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # nightly
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "dftracer-utils repo to build (non-LLNL builds are prereleases)"
+        required: false
+        default: "LLNL/dftracer-utils"
+      ref:
+        description: "ref to build (must contain web/ and the viz server)"
+        required: false
+        default: "develop"
+
+permissions:
+  contents: write
+
+env:
+  UTILS_REPO: ${{ github.event.inputs.repo || 'LLNL/dftracer-utils' }}
+  ROCKSDB_VERSION: "10.10.1"
+  REF: ${{ github.event.inputs.ref || 'develop' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      exists: ${{ steps.v.outputs.exists }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve version from dftracer-utils
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --filter=blob:none "https://github.com/${UTILS_REPO}.git" src
+          git -C src fetch --tags --force
+          git -C src checkout "$REF"
+          pip install setuptools_scm
+          VER="$(cd src && python -m setuptools_scm)"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VER" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "dftracer-utils $REF -> $VER (release exists: $(gh release view "v$VER" -R "${{ github.repository }}" >/dev/null 2>&1 && echo yes || echo no))"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.exists == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {
+              runner: ubuntu-22.04,
+              os: linux,
+              arch: x64,
+              container: "quay.io/pypa/manylinux_2_28_x86_64",
+            }
+          - {
+              runner: ubuntu-22.04-arm,
+              os: linux,
+              arch: arm64,
+              container: "quay.io/pypa/manylinux_2_28_aarch64",
+            }
+          - {
+              runner: macos-15-intel,
+              os: darwin,
+              arch: x64,
+              macos_target: "13.0",
+            }
+          - { runner: macos-14, os: darwin, arch: arm64, macos_target: "14.0" }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout dftracer-utils
+        run: |
+          git config --global --add safe.directory '*'
+          git clone --filter=blob:none "https://github.com/${UTILS_REPO}.git" src
+          git -C src fetch --tags --force
+          git -C src checkout "$REF"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build web UI
+        run: |
+          if [ -d src/web ]; then
+            (cd src/web && npm ci && npm run build)
+          else
+            echo "::error::src/web missing at ref '$REF' of $UTILS_REPO - the viewer UI is not on this ref."
+            exit 1
+          fi
+
+      - name: Install build tools
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            dnf install -y zlib-devel >/dev/null
+            pipx install cmake >/dev/null 2>&1 || true
+            pipx install ninja >/dev/null 2>&1 || true
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          else
+            brew install ninja || true
+          fi
+
+      - name: Prepare deps dir
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            mkdir -p /opt/dftracer-deps
+          else
+            sudo mkdir -p /opt/dftracer-deps
+            sudo chown "$(id -u):$(id -g)" /opt/dftracer-deps
+          fi
+
+      - name: Compiler fingerprint
+        id: fp
+        run: echo "cc=$(c++ --version | head -1 | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve zstd version
+        id: zstd
+        run: |
+          V="$(awk '/facebook\/zstd/{f=1} f&&/^[[:space:]]*VERSION[[:space:]]*$/{getline v; gsub(/[[:space:]]/,"",v); print v; exit}' src/cmake/modules/Dependencies.cmake)"
+          [ -n "$V" ] || { echo "::error::could not read zstd version from Dependencies.cmake"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "zstd -> $V"
+
+      - name: Cache RocksDB + zstd
+        id: rocksdb
+        uses: actions/cache@v4
+        with:
+          path: /opt/dftracer-deps
+          key: rocksdb-v2-${{ matrix.runner }}-${{ env.ROCKSDB_VERSION }}-zstd${{ steps.zstd.outputs.version }}-${{ steps.fp.outputs.cc }}-${{ hashFiles('src/scripts/ci/build_rocksdb.sh') }}
+
+      - name: Build pinned zstd
+        if: steps.rocksdb.outputs.cache-hit != 'true'
+        env:
+          ZSTD_VERSION: ${{ steps.zstd.outputs.version }}
+        run: |
+          PREFIX="/opt/dftracer-deps/zstd-${ZSTD_VERSION}"
+          curl -fsSL "https://github.com/facebook/zstd/archive/refs/tags/v${ZSTD_VERSION}.tar.gz" | tar -xz
+          cmake -S "zstd-${ZSTD_VERSION}/build/cmake" -B zstd-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DZSTD_BUILD_PROGRAMS=OFF \
+            -DZSTD_BUILD_TESTS=OFF
+          cmake --build zstd-build
+          cmake --install zstd-build
+
+      - name: Build RocksDB
+        if: steps.rocksdb.outputs.cache-hit != 'true'
+        working-directory: src
+        env:
+          ROCKSDB_BUILD_TYPE: Release
+          CMAKE_PREFIX_PATH: /opt/dftracer-deps/zstd-${{ steps.zstd.outputs.version }}
+          zstd_ROOT: /opt/dftracer-deps/zstd-${{ steps.zstd.outputs.version }}
+        run: ./scripts/ci/build_rocksdb.sh
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: src/.cpmsource
+          key: cpmsource-v1-${{ hashFiles('src/cmake/modules/Dependencies.cmake') }}
+          restore-keys: cpmsource-v1-
+
+      - name: Configure + build
+        working-directory: src
+        env:
+          DFTRACER_UTILS_ROCKSDB_PREFIX: /opt/dftracer-deps/rocksdb-${{ env.ROCKSDB_VERSION }}
+        run: |
+          EXTRA=()
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            RPATH='@loader_path/../lib'
+          else
+            RPATH='$ORIGIN/../lib'
+            EXTRA+=(-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+            EXTRA+=(-DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDFTRACER_UTILS_LOCAL_PACKAGES=OFF \
+            -DDFTRACER_UTILS_BUILD_PYTHON=OFF \
+            -DDFTRACER_UTILS_BUILD_TESTS=OFF \
+            -DDFTRACER_UTILS_BUILD_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_RPATH="$RPATH" \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCPM_SOURCE_CACHE="$PWD/.cpmsource" \
+            "${EXTRA[@]}"
+          cmake --build build
+
+      - name: Install + relocatize
+        run: |
+          NAME="dftracer-utils-${{ needs.plan.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}"
+          cmake --install src/build --prefix "stage/$NAME"
+          bash scripts/bundle.sh "stage/$NAME"
+          tar -C stage -czf "$NAME.tar.gz" "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.os }}-${{ matrix.arch }}
+          path: "*.tar.gz"
+
+  release:
+    needs: [plan, build]
+    if: needs.plan.outputs.exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+      - name: Checksums
+        run: sha256sum *.tar.gz | tee SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ needs.plan.outputs.version }}"
+          PRE=""
+          [ "$UTILS_REPO" != "LLNL/dftracer-utils" ] && PRE="--prerelease"
+          gh release create "v$VER" *.tar.gz SHA256SUMS \
+            -R "${{ github.repository }}" \
+            -t "v$VER" \
+            -n "Prebuilt dftracer-utils $VER (source: $UTILS_REPO@$REF)" \
+            $PRE
