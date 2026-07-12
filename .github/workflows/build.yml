@@ -28,6 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       exists: ${{ steps.v.outputs.exists }}
+      sha: ${{ steps.v.outputs.sha }}
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -40,6 +41,8 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UTILS_REPO}.git" src
           git -C src fetch --tags --force
           git -C src checkout "$REF"
+          SHA="$(git -C src rev-parse HEAD)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           pip install setuptools_scm
           VER="$(cd src && python -m setuptools_scm)"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
@@ -227,10 +230,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ needs.plan.outputs.version }}"
+          SHA="${{ needs.plan.outputs.sha }}"
           PRE=""
           [ "$UTILS_REPO" != "LLNL/dftracer-utils" ] && PRE="--prerelease"
+          NOTES="$(printf 'Prebuilt dftracer-utils %s (source: %s@%s)\n\nBuilt from commit https://github.com/%s/commit/%s' \
+            "$VER" "$UTILS_REPO" "$REF" "$UTILS_REPO" "$SHA")"
           gh release create "v$VER" *.tar.gz SHA256SUMS \
             -R "${{ github.repository }}" \
             -t "v$VER" \
-            -n "Prebuilt dftracer-utils $VER (source: $UTILS_REPO@$REF)" \
+            -n "$NOTES" \
             $PRE
