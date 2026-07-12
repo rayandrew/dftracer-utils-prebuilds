@@ -213,6 +213,7 @@ jobs:
         with:
           name: bundle-${{ matrix.os }}-${{ matrix.arch }}
           path: "*.tar.gz"
+          retention-days: 1
 
   release:
     needs: [plan, build]
