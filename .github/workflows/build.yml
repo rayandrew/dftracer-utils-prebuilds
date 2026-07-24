@@ -19,7 +19,7 @@ permissions:
 
 env:
   UTILS_REPO: ${{ github.event.inputs.repo || 'LLNL/dftracer-utils' }}
-  ROCKSDB_VERSION: "10.10.1"
+  ROCKSDB_VERSION: "11.1.2"
   REF: ${{ github.event.inputs.ref || 'develop' }}
 
 jobs:
