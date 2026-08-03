@@ -1,6 +1,6 @@
 # dftracer-utils-prebuilds
 
-Prebuilt, relocatable [dftracer-utils](https://github.com/LLNL/dftracer-utils)
+Prebuilt, relocatable [dftracer-utils](https://github.com/rayandrew/dftracer-utils)
 bundles for macOS and Linux (x64 / arm64), published as GitHub Releases.
 
 Each release asset `dftracer-utils-<version>-<os>-<arch>.tar.gz` extracts to a

@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       repo:
-        description: "dftracer-utils repo to build (non-LLNL builds are prereleases)"
+        description: "dftracer-utils repo to build (non-rayandrew builds are prereleases)"
         required: false
-        default: "LLNL/dftracer-utils"
+        default: "rayandrew/dftracer-utils"
       ref:
         description: "ref to build (must contain web/ and the viz server)"
         required: false
@@ -18,8 +18,7 @@ permissions:
   contents: write
 
 env:
-  UTILS_REPO: ${{ github.event.inputs.repo || 'LLNL/dftracer-utils' }}
-  ROCKSDB_VERSION: "11.1.2"
+  UTILS_REPO: ${{ github.event.inputs.repo || 'rayandrew/dftracer-utils' }}
   REF: ${{ github.event.inputs.ref || 'develop' }}
 
 jobs:
@@ -130,6 +129,13 @@ jobs:
         id: fp
         run: echo "cc=$(c++ --version | head -1 | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve RocksDB version
+        id: rocksdb_ver
+        run: |
+          V="$(bash src/scripts/ci/rocksdb_version.sh)"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "rocksdb -> $V"
+
       - name: Resolve zstd version
         id: zstd
         run: |
@@ -143,7 +149,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/dftracer-deps
-          key: rocksdb-v2-${{ matrix.runner }}-${{ env.ROCKSDB_VERSION }}-zstd${{ steps.zstd.outputs.version }}-${{ steps.fp.outputs.cc }}-${{ hashFiles('src/scripts/ci/build_rocksdb.sh') }}
+          key: rocksdb-v2-${{ matrix.runner }}-${{ steps.rocksdb_ver.outputs.version }}-zstd${{ steps.zstd.outputs.version }}-${{ steps.fp.outputs.cc }}-${{ hashFiles('src/scripts/ci/build_rocksdb.sh') }}
 
       - name: Build pinned zstd
         if: steps.rocksdb.outputs.cache-hit != 'true'
@@ -180,7 +186,7 @@ jobs:
       - name: Configure + build
         working-directory: src
         env:
-          DFTRACER_UTILS_ROCKSDB_PREFIX: /opt/dftracer-deps/rocksdb-${{ env.ROCKSDB_VERSION }}
+          DFTRACER_UTILS_ROCKSDB_PREFIX: /opt/dftracer-deps/rocksdb-${{ steps.rocksdb_ver.outputs.version }}
         run: |
           EXTRA=()
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -233,7 +239,7 @@ jobs:
           VER="${{ needs.plan.outputs.version }}"
           SHA="${{ needs.plan.outputs.sha }}"
           PRE=""
-          [ "$UTILS_REPO" != "LLNL/dftracer-utils" ] && PRE="--prerelease"
+          [ "$UTILS_REPO" != "rayandrew/dftracer-utils" ] && PRE="--prerelease"
           NOTES="$(printf 'Prebuilt dftracer-utils %s (source: %s@%s)\n\nBuilt from commit https://github.com/%s/commit/%s' \
             "$VER" "$UTILS_REPO" "$REF" "$UTILS_REPO" "$SHA")"
           gh release create "v$VER" *.tar.gz SHA256SUMS \
