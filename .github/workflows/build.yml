@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       repo:
-        description: "dftracer-utils repo to build (non-rayandrew builds are prereleases)"
+        description: "dftracer-utils repo to build"
         required: false
         default: "rayandrew/dftracer-utils"
       ref:
@@ -239,7 +239,11 @@ jobs:
           VER="${{ needs.plan.outputs.version }}"
           SHA="${{ needs.plan.outputs.sha }}"
           PRE=""
-          [ "$UTILS_REPO" != "rayandrew/dftracer-utils" ] && PRE="--prerelease"
+          # A clean release is X.Y.Z (optionally more numeric segments). Anything
+          # with pre/post/dev or a local segment (e.g. v0.0.12.post1.dev50) is a prerelease.
+          if ! printf '%s' "$VER" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            PRE="--prerelease"
+          fi
           NOTES="$(printf 'Prebuilt dftracer-utils %s (source: %s@%s)\n\nBuilt from commit https://github.com/%s/commit/%s' \
             "$VER" "$UTILS_REPO" "$REF" "$UTILS_REPO" "$SHA")"
           gh release create "v$VER" *.tar.gz SHA256SUMS \
