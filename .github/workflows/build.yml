@@ -8,7 +8,7 @@ on:
       repo:
         description: "dftracer-utils repo to build"
         required: false
-        default: "rayandrew/dftracer-utils"
+        default: "llnl-asr/dftracer-utils"
       ref:
         description: "ref to build (must contain web/ and the viz server)"
         required: false
@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-  UTILS_REPO: ${{ github.event.inputs.repo || 'rayandrew/dftracer-utils' }}
+  UTILS_REPO: ${{ github.event.inputs.repo || 'llnl-asr/dftracer-utils' }}
   REF: ${{ github.event.inputs.ref || 'develop' }}
 
 jobs:
